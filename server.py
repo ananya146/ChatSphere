@@ -1,17 +1,20 @@
 import socket
 import threading
-import rsa  # For RSA encryption
+import rsa
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
+import hashlib
 
 # Generate RSA keys for the server
 (public_key, private_key) = rsa.newkeys(2048)
 
 # Server configuration
-HOST = '127.0.0.1'  # Localhost
-PORT = 12345        # Port to listen on
+HOST = '127.0.0.1'
+PORT = 12345
 
 # Dictionary to store client sockets and their public keys
-clients = {}  # Format: {client_socket: username}
-public_keys = {}  # Format: {username: public_key}
+clients = {}
+public_keys = {}
 
 # Function to broadcast messages to all clients
 def broadcast(message, sender_socket=None):
@@ -30,8 +33,8 @@ def remove_client(client_socket):
         del clients[client_socket]
         client_socket.close()
 
-        # Broadcast the updated list of active users to all clients
-        active_users = ",".join(clients.values())  # Only usernames, no public keys
+        # Broadcast the updated list of active users 
+        active_users = ",".join(clients.values())
         broadcast(f"ACTIVE_USERS:{active_users}")
 
         # Notify all clients that the user has left
@@ -62,7 +65,7 @@ def handle_client(client_socket):
         broadcast(f"{username} has joined the chat.", client_socket)
 
         # Send the list of active users to the new client
-        active_users = ",".join(clients.values())  # Only usernames, no public keys
+        active_users = ",".join(clients.values())
         client_socket.send(f"ACTIVE_USERS:{active_users}".encode('utf-8'))
 
         # Send the new user's public key to all existing clients
@@ -75,13 +78,13 @@ def handle_client(client_socket):
             if user != username:
                 client_socket.send(f"PUBLIC_KEY:{user}:{key.save_pkcs1().decode('utf-8')}".encode('utf-8'))
 
-        # Broadcast the updated list of active users to all clients
+        # Broadcast the updated list of active users 
         broadcast(f"ACTIVE_USERS:{active_users}")
 
         # Send the server's public key to the client
         client_socket.send(f"PUBLIC_KEY:Server:{public_key.save_pkcs1().decode('utf-8')}".encode('utf-8'))
 
-        # Handle incoming messages from the client
+        # Handle incoming messages
         while True:
             message = client_socket.recv(1024).decode('utf-8')
             if not message:
@@ -89,23 +92,28 @@ def handle_client(client_socket):
 
             if message.startswith("MSG:"):
                 # Handle encrypted messages
-                _, recipient, encrypted_message = message.split(":", 2)
+                _, recipient, encrypted_message, encrypted_aes_key, message_hash = message.split(":", 4)
                 recipient_socket = next((sock for sock, user in clients.items() if user == recipient), None)
                 if recipient_socket:
-                    recipient_socket.send(f"{username}:{encrypted_message}".encode('utf-8'))
+                    recipient_socket.send(f"{username}:{encrypted_message}:{encrypted_aes_key}:{message_hash}".encode('utf-8'))
             elif message.startswith("FILE:"):
                 # Handle file transfers
-                _, recipient, file_name = message.split(":", 2)
-                recipient_socket = next((sock for sock, user in clients.items() if user == recipient), None)
-                if recipient_socket:
-                    # Notify the recipient about the incoming file
-                    recipient_socket.send(f"FILE:{username}:{file_name}".encode('utf-8'))
+                parts = message.split(":")
+                if len(parts) == 4: 
+                    _, recipient, file_name, file_size = parts
+                    file_size = int(file_size)  
+                    recipient_socket = next((sock for sock, user in clients.items() if user == recipient), None)
+                    if recipient_socket:
+                        recipient_socket.send(f"FILE:{username}:{file_name}:{file_size}".encode('utf-8'))
 
-                    # Forward the file data to the recipient
-                    file_data = client_socket.recv(1024)
-                    while file_data:
-                        recipient_socket.send(file_data)
-                        file_data = client_socket.recv(1024)
+                        # Forward the file data 
+                        bytes_sent = 0
+                        while bytes_sent < file_size:
+                            file_data = client_socket.recv(1024)
+                            if not file_data:
+                                break
+                            recipient_socket.send(file_data)
+                            bytes_sent += len(file_data)
             elif message.startswith("REQUEST_KEY:"):
                 # Handle requests for missing public keys
                 _, requested_user = message.split(":", 1)
