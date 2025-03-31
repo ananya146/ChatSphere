@@ -1,5 +1,5 @@
 # ChatSphere
-ChatSphere, is designed to facilitate real-time communication between multiple clients while ensuring data integrity and confidentiality. To achieve secure transmission, the system integrates encryption and decryption mechanisms using RSA, preventing unauthorized access and interception of messages. The server is built to handle multiple concurrent client connections efficiently, ensuring seamless communication. Additionally, the application provides a structured protocol for message and file exchange, maintaining reliability and security in data transmission.
+ChatSphere is designed to facilitate real-time communication between multiple clients while ensuring data integrity and confidentiality. To achieve secure transmission, the system integrates end-to-end encryption using RSA for key exchange and AES-256 for message encryption, preventing unauthorized access and interception. The server efficiently handles multiple concurrent client connections using threading, ensuring seamless communication. A user-friendly GUI (Tkinter) with customizable themes enhances accessibility while robust error handling ensures smooth operation.
 
 User Login With Unique User name
 ![image](https://github.com/user-attachments/assets/fff440d6-d80e-470f-ad53-81463c88158f)
