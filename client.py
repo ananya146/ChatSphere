@@ -2,52 +2,55 @@ import socket
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, scrolledtext, font, colorchooser
-import rsa  # For RSA encryption
+import rsa
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
+import hashlib
 import os
 
 # Generate RSA keys for the client
-(public_key, private_key) = rsa.newkeys(2048)  # 2048-bit key for better security
-
+(public_key, private_key) = rsa.newkeys(2048)
 # Server configuration
 HOST = '127.0.0.1'
 PORT = 12345
 
-# Create a socket and connect to the server
+# Create a socket and connect 
 client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 client_socket.connect((HOST, PORT))
 
-# Dictionary to store chat history for each user
+# Dictionary to store chat history 
 chat_history = {}
 
-# Dictionary to store public keys of other users
+# Dictionary to store public keys
 public_keys = {}
 
-# Threading lock for thread-safe access to shared resources
+# Threading lock 
 chat_lock = threading.Lock()
 
-# Function to encrypt a message using RSA
-def encrypt_message(message, public_key):
-    try:
-        return rsa.encrypt(message.encode('utf-8'), public_key)
-    except Exception as e:
-        print(f"Encryption failed: {e}")
-        return None
+# Function to encrypt a message using AES
+def encrypt_message_aes(message, key):
+    cipher = AES.new(key, AES.MODE_EAX)
+    nonce = cipher.nonce
+    ciphertext, tag = cipher.encrypt_and_digest(message.encode('utf-8'))
+    return nonce + ciphertext + tag
 
-# Function to decrypt a message using RSA
-def decrypt_message(encrypted_message):
-    try:
-        return rsa.decrypt(encrypted_message, private_key).decode('utf-8')
-    except rsa.DecryptionError:
-        print("Decryption failed: Incorrect key or corrupted data.")
-        return None
-    except Exception as e:
-        print(f"Decryption error: {e}")
-        return None
+# Function to decrypt a message using AES
+def decrypt_message_aes(encrypted_message, key):
+    nonce = encrypted_message[:16]
+    ciphertext = encrypted_message[16:-16]
+    tag = encrypted_message[-16:]
+    cipher = AES.new(key, AES.MODE_EAX, nonce=nonce)
+    plaintext = cipher.decrypt_and_verify(ciphertext, tag)
+    return plaintext.decode('utf-8')
 
-# Function to update the chat box with the selected user's chat history
+# Function to compute SHA-1 hash
+def compute_hash(message):
+    return hashlib.sha1(message.encode('utf-8')).hexdigest()
+
+# Function to update the chat box 
 def update_chat_box(selected_user):
     chat_box.config(state='normal')
-    chat_box.delete(1.0, tk.END)  # Clear the chat box
+    chat_box.delete(1.0, tk.END)
     if selected_user in chat_history:
         for message in chat_history[selected_user]:
             if message.startswith("FILE:"):
@@ -62,7 +65,7 @@ def update_chat_box(selected_user):
                 # Handle text messages
                 chat_box.insert(tk.END, f"{message}\n", 'received')
     chat_box.config(state='disabled')
-    chat_box.yview(tk.END)  # Auto-scroll to the bottom
+    chat_box.yview(tk.END)
 
 def request_missing_keys():
     with chat_lock:
@@ -78,26 +81,31 @@ def send_message(event=None):
     message = entry_field.get()
     if message and selected_user:
         try:
-            # Check if the recipient's public key is available
             recipient_public_key = public_keys.get(selected_user)
             if recipient_public_key:
-                # Encrypt the message using the recipient's public key
-                encrypted_message = encrypt_message(message, recipient_public_key)
-                if encrypted_message:
-                    client_socket.send(f"MSG:{selected_user}:{encrypted_message.hex()}".encode('utf-8'))
-                    entry_field.delete(0, tk.END)
+                # Generate AES key
+                aes_key = get_random_bytes(16)
+                # Encrypt the message using AES
+                encrypted_message = encrypt_message_aes(message, aes_key)
+                # Encrypt the AES key 
+                encrypted_aes_key = rsa.encrypt(aes_key, recipient_public_key)
+                # Compute the hash 
+                message_hash = compute_hash(message)
+                # Send the encrypted message, encrypted AES key, and hash
+                client_socket.send(f"MSG:{selected_user}:{encrypted_message.hex()}:{encrypted_aes_key.hex()}:{message_hash}".encode('utf-8'))
+                entry_field.delete(0, tk.END)
 
-                    # Add the message to the chat history
-                    with chat_lock:
-                        if selected_user not in chat_history:
-                            chat_history[selected_user] = []
-                        chat_history[selected_user].append(f"You: {message}")
+                # Add the message 
+                with chat_lock:
+                    if selected_user not in chat_history:
+                        chat_history[selected_user] = []
+                    chat_history[selected_user].append(f"You: {message}")
 
-                    # Update the chat box
-                    update_chat_box(selected_user)
+                # Update the chat box
+                update_chat_box(selected_user)
             else:
                 print(f"Public key for {selected_user} not found. Requesting key...")
-                request_missing_keys()  # Request the missing key
+                request_missing_keys()
         except Exception as e:
             print(f"Error sending message: {e}")
 
@@ -108,21 +116,22 @@ def send_file():
         file_path = filedialog.askopenfilename()
         if file_path:
             try:
+                file_size = os.path.getsize(file_path)
+                file_name = file_path.split("/")[-1]
+
+                # Send the file metadata
+                client_socket.send(f"FILE:{selected_user}:{file_name}:{file_size}".encode('utf-8'))
+
+                # Send the file
                 with open(file_path, 'rb') as file:
                     file_data = file.read()
-                file_name = file_path.split("/")[-1]  # Extract file name
-
-                # Send the file metadata to the server
-                client_socket.send(f"FILE:{selected_user}:{file_name}".encode('utf-8'))
-
-                # Send the file data
-                client_socket.send(file_data)
+                    client_socket.sendall(file_data)  
 
                 # Add the file sent message to the chat history
                 with chat_lock:
                     if selected_user not in chat_history:
                         chat_history[selected_user] = []
-                    chat_history[selected_user].append(f"FILE:You:{file_name}")
+                    chat_history[selected_user].append(f"File sent: {file_name}")
 
                 # Update the chat box
                 update_chat_box(selected_user)
@@ -131,14 +140,10 @@ def send_file():
 
 # Function to handle file download
 def download_file(file_name):
-    if not os.path.exists(file_name):
-        messagebox.showerror("Error", f"File '{file_name}' not found.")
-        return
-
     file_path = filedialog.asksaveasfilename(defaultextension=".*", initialfile=file_name)
     if file_path:
         try:
-            with open(file_name, 'rb') as file:
+            with open(os.path.join("Downloads", file_name), 'rb') as file:
                 file_data = file.read()
             with open(file_path, 'wb') as new_file:
                 new_file.write(file_data)
@@ -170,10 +175,9 @@ def receive_messages():
             # Receive the message
             message = client_socket.recv(1024).decode('utf-8')
             if not message:
-                break  # Exit if the connection is closed
+                break
 
             if message.startswith("PUBLIC_KEY:"):
-                # Handle public key exchange
                 parts = message.split(":")
                 if len(parts) >= 3:
                     user = parts[1]
@@ -183,86 +187,77 @@ def receive_messages():
                         print(f"DEBUG: Received public key for {user}")
             elif message.startswith("ACTIVE_USERS:"):
                 try:
-                    # Extract the list of active users
-                    active_users = message.split(":")[1].strip()  # Remove any leading/trailing whitespace
-                    print(f"DEBUG: Received ACTIVE_USERS: {active_users}")  # Debug print
+                    active_users = message.split(":")[1].strip()
+                    print(f"DEBUG: Received ACTIVE_USERS: {active_users}")
 
-                    # Split the active users into a list
                     user_list = active_users.split(",") if active_users else []
 
-                    # Update the user listbox in a thread-safe manner
                     with chat_lock:
                         user_listbox.delete(0, tk.END)
                         for user in user_list:
-                            if user != username:  # Exclude the current user
+                            if user != username:
                                 user_listbox.insert(tk.END, user)
                 except Exception as e:
                     print(f"Error processing ACTIVE_USERS message: {e}")
             elif message.startswith("FILE:"):
                 # Handle file transfer
                 parts = message.split(":")
-                if len(parts) >= 3:
+                if len(parts) >= 4:
                     sender = parts[1]
                     file_name = parts[2]
+                    file_size = int(parts[3])
 
-                    # Notify the server that the client is ready to receive the file
-                    client_socket.send("READY".encode('utf-8'))
-
-                    # Receive the file data in chunks
-                    file_data = b""
-                    while True:
-                        chunk = client_socket.recv(1024)
-                        if not chunk:
-                            break
-                        file_data += chunk
-                        if len(chunk) < 1024:
-                            break
-
-                    # Save the file
-                    with open(file_name, 'wb') as file:
-                        file.write(file_data)
-
-                    # Add the file received message to the chat history
                     with chat_lock:
                         if sender not in chat_history:
                             chat_history[sender] = []
-                        chat_history[sender].append(f"FILE:{sender}:{file_name}")
+                        chat_history[sender].append(f"File received: {file_name}")
 
-                    # Update the chat box if the sender is the selected user
+                    # Update the chat box 
                     selected_user = user_listbox.get(tk.ACTIVE)
                     if selected_user == sender:
-                        update_chat_box(sender)
+                        chat_box.config(state='normal')
+                        chat_box.insert(tk.END, f"File received: {file_name}\n", 'file')
+                        chat_box.insert(tk.END, "[Download]\n\n", 'download')
+                        chat_box.tag_bind('download', '<Button-1>', lambda event, fn=file_name: download_file(fn))
+                        chat_box.config(state='disabled')
+                        chat_box.yview(tk.END)
             else:
                 # Handle regular messages
                 parts = message.split(":")
-                if len(parts) >= 2:
+                if len(parts) >= 4:
                     sender = parts[0]
-                    encrypted_message = bytes.fromhex(parts[1])  # Convert hex to bytes
+                    encrypted_message = bytes.fromhex(parts[1])
+                    encrypted_aes_key = bytes.fromhex(parts[2])
+                    received_hash = parts[3]
 
-                    # Decrypt the message
-                    decrypted_message = decrypt_message(encrypted_message)
-                    if decrypted_message:
-                        # Add the message to the chat history
+                    # Decrypt the AES key 
+                    aes_key = rsa.decrypt(encrypted_aes_key, private_key)
+                    # Decrypt the message using AES
+                    decrypted_message = decrypt_message_aes(encrypted_message, aes_key)
+                    # Compute the hash 
+                    computed_hash = compute_hash(decrypted_message)
+                    # Verify the hash
+                    if computed_hash == received_hash:
                         with chat_lock:
                             if sender not in chat_history:
                                 chat_history[sender] = []
                             chat_history[sender].append(f"{sender}: {decrypted_message}")
 
-                        # Update the chat box if the sender is the selected user
                         selected_user = user_listbox.get(tk.ACTIVE)
                         if selected_user == sender:
                             update_chat_box(sender)
+                    else:
+                        print("Hash verification failed. Message integrity compromised.")
         except Exception as e:
             print(f"Connection closed: {e}")
             break
 
-    # Close the socket if the loop exits
     client_socket.close()
 
 # GUI setup
 root = tk.Tk()
-root.title("ChatSphere")  # Fashionable name
-root.geometry("600x500")  # Slightly larger window size
+root.title("ChatSphere")
+root.geometry("600x500")
 root.configure(bg="#f0f0f0")
 
 # Custom font for the title
@@ -339,7 +334,6 @@ else:
     # Send the client's public key to the server
     client_socket.send(f"PUBLIC_KEY:{username}:{public_key.save_pkcs1().decode('utf-8')}".encode('utf-8'))
 
-    # Start a thread to receive messages
     receive_thread = threading.Thread(target=receive_messages)
     receive_thread.start()
 
